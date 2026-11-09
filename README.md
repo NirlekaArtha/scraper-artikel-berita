@@ -90,8 +90,8 @@ Aplikasi scraper artikel berita otomatis berbasis Python yang dirancang untuk me
 
 1. **Clone atau Unduh Repositori**:
    ```bash
-   git clone <URL_REPOSITORY_ANDA>
-   cd "script scraping"
+   git clone https://github.com/NirlekaArtha/scraper-artikel-berita.git
+   cd "scraper-artikel-berita"
    ```
 
 2. **Buat dan Aktifkan Virtual Environment** (disarankan):
