@@ -224,7 +224,8 @@ def scrape_tirto(
     Menyimpan hasil ke output_file dalam format JSON Lines (.jsonl).
     Mengembalikan jumlah artikel yang berhasil diambil.
     """
-    requester = PoliteRequester(delay=delay)
+    # Gunakan impersonate agar tidak direset oleh Cloudflare Tirto.id
+    requester = PoliteRequester(delay=delay, use_impersonate=True)
     seen_urls = load_existing_urls(output_file)
     collected = 0
 

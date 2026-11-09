@@ -21,7 +21,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 Deskripsi:
 Modul utilitas bersama untuk scraping portal berita.
 Menangani pengecekan robots.txt, rate limiting (jeda request),
-pembersihan teks berita, penghitungan kata, dan penyimpanan JSON Lines (.jsonl).
+mekanisme retry otomatis, pembersihan teks berita, penghitungan kata,
+dan penyimpanan JSON Lines (.jsonl).
 """
 
 import json
@@ -63,7 +64,7 @@ class RobotsChecker:
                 robots_url,
                 impersonate="chrome124",
                 headers={"User-Agent": DEFAULT_USER_AGENT},
-                timeout=10,
+                timeout=30,
             )
             if resp.status_code == 200 and resp.text:
                 rp.parse(resp.text.splitlines())
@@ -103,11 +104,20 @@ class PoliteRequester:
     """
     HTTP client yang mematuhi robots.txt dan memberikan jeda antar request (rate limiting).
     Mendukung requests standar maupun curl_cffi (untuk portal dengan proteksi Cloudflare).
+    Mendukung mekanisme retry otomatis hingga 5 kali percobaan jika terjadi timeout atau gangguan jaringan.
     """
 
-    def __init__(self, delay: float = 1.5, use_impersonate: bool = False):
+    def __init__(
+        self,
+        delay: float = 1.5,
+        use_impersonate: bool = False,
+        max_retries: int = 5,
+        default_timeout: int = 15,
+    ):
         self.default_delay = delay
         self.use_impersonate = use_impersonate
+        self.max_retries = max_retries
+        self.default_timeout = default_timeout
         self.robots = RobotsChecker(user_agent="*")
         self._last_request_time: float = 0.0
         self.session = requests.Session()
@@ -135,10 +145,11 @@ class PoliteRequester:
         url: str,
         headers: Optional[Dict[str, str]] = None,
         params: Optional[Dict[str, str]] = None,
-        timeout: int = 15,
+        timeout: Optional[int] = None,
         check_robots: bool = True,
+        max_retries: Optional[int] = None,
     ):
-        """Melakukan HTTP GET dengan pengecekan robots.txt dan jeda sopan."""
+        """Melakukan HTTP GET dengan pengecekan robots.txt, jeda sopan, dan retry otomatis jika gagal."""
         full_url = url
         if params:
             query_str = urllib.parse.urlencode(params)
@@ -149,18 +160,37 @@ class PoliteRequester:
             print(f"  [robots.txt] Dilarang mengakses URL: {full_url}")
             return None
 
-        self._wait_polite(full_url)
-        self._last_request_time = time.time()
+        actual_timeout = timeout if timeout is not None else self.default_timeout
+        retries_limit = max_retries if max_retries is not None else self.max_retries
 
-        try:
-            if self.use_impersonate:
-                resp = self.csession.get(url, headers=headers, params=params, timeout=timeout)
-            else:
-                resp = self.session.get(url, headers=headers, params=params, timeout=timeout)
-            return resp
-        except Exception as e:
-            print(f"  [Error Request] Gagal mengakses {full_url}: {e}")
-            return None
+        for attempt in range(1, retries_limit + 1):
+            self._wait_polite(full_url)
+            self._last_request_time = time.time()
+
+            try:
+                if self.use_impersonate:
+                    resp = self.csession.get(url, headers=headers, params=params, timeout=actual_timeout)
+                else:
+                    resp = self.session.get(url, headers=headers, params=params, timeout=actual_timeout)
+
+                # Cek apakah server mengembalikan rate limit (429) atau server error sementara (500, 502, 503, 504)
+                if resp.status_code in (429, 500, 502, 503, 504):
+                    if attempt < retries_limit:
+                        backoff = 2 * attempt
+                        print(f"  [HTTP {resp.status_code}] Percobaan {attempt}/{retries_limit} gagal untuk {full_url}. Menunggu {backoff} detik...")
+                        time.sleep(backoff)
+                        continue
+                return resp
+            except Exception as e:
+                if attempt < retries_limit:
+                    backoff = 2 * attempt
+                    print(f"  [Retry {attempt}/{retries_limit}] Gagal mengakses {full_url} ({e}). Mencoba lagi dalam {backoff} detik...")
+                    time.sleep(backoff)
+                else:
+                    print(f"  [Error Request] Gagal mengakses {full_url} setelah {retries_limit} percobaan: {e}")
+                    return None
+
+        return None
 
 
 def clean_article_text(text: str) -> str:
